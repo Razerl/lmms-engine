@@ -1,6 +1,8 @@
 from .aero import AeroConfig, AeroForConditionalGeneration, AeroProcessor
 from .bagel import Bagel, BagelConfig
 from .config import ModelConfig
+from .dream_dllm import DreamDLLMConfig, DreamDLLMForMaskedLM
+from .llada_dllm import LLaDADLLMConfig, LLaDADLLMForMaskedLM
 from .llava_onevision import apply_liger_kernel_to_llava_onevision
 from .monkey_patch import MONKEY_PATCHER
 from .qwen2 import apply_liger_kernel_to_qwen2
@@ -43,6 +45,10 @@ __all__ = [
     "WanVideoProcessor",
     "Qwen3DLLMConfig",
     "Qwen3DLLMForMaskedLM",
+    "DreamDLLMConfig",
+    "DreamDLLMForMaskedLM",
+    "LLaDADLLMConfig",
+    "LLaDADLLMForMaskedLM",
     "MONKEY_PATCHER",
     "RaeSiglipConfig",
     "RaeSiglipModel",
