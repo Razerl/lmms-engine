@@ -69,7 +69,7 @@ class TrainRunner:
             model = model_class.from_pretrained(
                 load_from_pretrained_path,
                 attn_implementation=self.model_config.attn_implementation,
-                torch_dtype=(torch.bfloat16 if self.config.trainer_args.bf16 else None),
+                dtype=(torch.bfloat16 if self.config.trainer_args.bf16 else None),
                 **model_kwargs,
             )
         elif load_from_config is not None:
@@ -163,12 +163,13 @@ class TrainRunner:
 
     def run(self, **kwargs):
         if self.config.trainer_args.freeze_modules:
+            logger.info(f"Freezing modules: {self.config.trainer_args.freeze_modules}")
             for modules in self.config.trainer_args.freeze_modules:
                 cls = getattr(self.model, modules, None)
                 if cls is not None:
                     for param in cls.parameters():
                         param.requires_grad = False
-
+        logger.info(f"Trainable model size: {sum(p.numel() for p in self.model.parameters() if p.requires_grad) / 1e9} B")
         if list(pathlib.Path(self.config.trainer_args.output_dir).glob("checkpoint-*")):
             self.trainer.train(resume_from_checkpoint=True)
         else:

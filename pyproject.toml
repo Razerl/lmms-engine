@@ -11,12 +11,12 @@ version = "0.1.2"
 authors = [{name = "LMMs-Lab"}]
 description = "A simple, unified multimodal models training engine. Lean, flexible, and built for hacking, and hacking at scale."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = "==3.12"
 license = { text = "Apache-2.0" }
 dependencies = [
     "datasets",
     "hf_transfer",
-    "transformers==4.57.1",
+    "transformers",
     "accelerate",
     "pillow",
     "peft",
@@ -27,14 +27,14 @@ dependencies = [
     "pydantic",
     "jsonlines",
     "librosa",
-    "pynvml",
+    "nvidia-ml-py",
     "decord",
-    "torch",
+    "torch==2.8.0",
     "torchvision",
     "pyyaml",
     "wandb",
     "torchdata",
-    "liger-kernel>=0.6.1",
+    "liger-kernel",
     "qwen-vl-utils",
     "qwen-omni-utils",
     "einops",
@@ -44,12 +44,12 @@ dependencies = [
     "omegaconf",
     "requests",
     "tqdm",
-    "opencv-python>=4.12.0.88",
+    "opencv-python",
 ]
 
 [project.optional-dependencies]
 pref = [
-    "trl==0.16.1",
+    "trl",
     "math-verify",
 ]
 

@@ -130,6 +130,10 @@ class TrainUtilities:
             flops = 989e12
         elif "A100" in device_name or "A800" in device_name:
             flops = 312e12
+        elif "4090 D" in device_name:
+            flops = 294.2e12
+        elif "4090" in device_name:
+            flops = 330.3e12
         elif "L40" in device_name:
             flops = 181.05e12
         elif "L20" in device_name:

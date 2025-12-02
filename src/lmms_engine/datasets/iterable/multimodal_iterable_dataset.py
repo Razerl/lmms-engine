@@ -153,6 +153,7 @@ class MultiModalIterableDataset(BaseIterableDataset, MultiModalDataLoadingMixin)
         curr_data_folder = self.data_folder[start_index:end_index]
         # self.data_folder = self.data_folder[start_index:end_index]
         curr_data_list = self.data_list.shard(num_shards=world_size, index=rank, contiguous=True)
+        logger.info(f"Data shard for rank {rank}: {len(curr_data_list)}")
 
         if worker_info is None:
             iter_start = 0
