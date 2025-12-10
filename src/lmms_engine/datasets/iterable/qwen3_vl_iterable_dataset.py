@@ -1,8 +1,8 @@
 import os
-from typing import Dict, Tuple
-
 import numpy as np
 import torch
+import random
+from typing import Dict, Tuple
 from PIL import Image
 from qwen_vl_utils import fetch_video
 
@@ -83,6 +83,11 @@ class Qwen3VLIterableDataset(VisionSFTIterableDataset):
             images = None
         if len(videos) == 0:
             videos = None
+        
+        # TODO: hardcode oms image size strategy
+        if len(images_list) > 0 and 'oms' in images_list[0].lower():
+            max_random_size = random.choice([2000000, 1000000, 500000, 300000])
+            kwargs.update({'max_pixels': max_random_size, 'min_pixels': 65536})
         inputs = self.processor.process(images=images, hf_messages=hf_messages, videos=videos, **kwargs)
         return inputs
 

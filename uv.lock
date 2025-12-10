@@ -590,6 +590,24 @@ wheels = [
 ]
 
 [[package]]
+name = "flash-attn"
+version = "2.8.3"
+source = { path = "../../downloads/flash_attn-2.8.3+cu12torch2.8cxx11abiFALSE-cp312-cp312-linux_x86_64.whl" }
+dependencies = [
+    { name = "einops" },
+    { name = "torch" },
+]
+wheels = [
+    { filename = "flash_attn-2.8.3+cu12torch2.8cxx11abifalse-cp312-cp312-linux_x86_64.whl", hash = "sha256:2605b2653e7b9d6615bbb154896ae4d3f0b95d3120af7a6374ee97092e61df02" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "einops" },
+    { name = "torch" },
+]
+
+[[package]]
 name = "frozenlist"
 version = "1.7.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1065,6 +1083,7 @@ dependencies = [
     { name = "decord" },
     { name = "deepspeed" },
     { name = "einops" },
+    { name = "flash-attn" },
     { name = "hf-transfer" },
     { name = "hydra-core" },
     { name = "jsonlines" },
@@ -1129,6 +1148,7 @@ requires-dist = [
     { name = "deepspeed" },
     { name = "diffusers", marker = "extra == 'sit'" },
     { name = "einops" },
+    { name = "flash-attn", path = "../../downloads/flash_attn-2.8.3+cu12torch2.8cxx11abiFALSE-cp312-cp312-linux_x86_64.whl" },
     { name = "google-cloud-storage", marker = "extra == 'storage'" },
     { name = "hf-transfer" },
     { name = "hydra-core" },
