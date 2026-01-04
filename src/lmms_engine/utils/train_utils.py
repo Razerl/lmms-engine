@@ -1,11 +1,21 @@
 import logging
 import math
-from typing import Iterable, List, Union
+from typing import Iterable, List, Literal, Optional, Union
 
 import deepspeed
 import torch
+import torch.distributed as dist
 from loguru import logger
+from torch.distributed import ProcessGroup
 from transformers import AutoProcessor
+
+from lmms_engine.utils.import_utils import is_torch_npu_available
+
+IS_CUDA_AVAILABLE = torch.cuda.is_available()
+IS_NPU_AVAILABLE = is_torch_npu_available()
+
+if IS_NPU_AVAILABLE:
+    torch.npu.config.allow_internal_format = False
 
 
 class TrainUtilities:
@@ -388,3 +398,45 @@ class TrainUtilities:
                 f" match:\n{mismatched_warning}\nYou should probably TRAIN this model on a down-stream task to be able"
                 " to use it for predictions and inference."
             )
+
+    @staticmethod
+    def get_device_type() -> str:
+        """Get device type based on current machine, currently only support CPU, CUDA, NPU."""
+        if IS_CUDA_AVAILABLE:
+            device = "cuda"
+        elif IS_NPU_AVAILABLE:
+            device = "npu"
+        else:
+            device = "cpu"
+
+        return device
+
+    @staticmethod
+    def all_reduce(
+        data: Union[int, float, List[Union[int, float]], "torch.Tensor"],
+        op: Literal["mean", "sum", "max", "min"] = "mean",
+        group: Optional["ProcessGroup"] = None,
+    ) -> Union[int, float, List[Union[int, float]]]:
+        """
+        Performs all reduce in the given process group.
+        """
+        if not dist.is_initialized():
+            raise RuntimeError("Distributed environment is not initialized.")
+
+        if not isinstance(data, torch.Tensor):
+            data = torch.tensor(data, dtype=torch.float, device=TrainUtilities.get_device_type())
+
+        reduce_ops = {
+            "mean": dist.ReduceOp.SUM,
+            "sum": dist.ReduceOp.SUM,
+            "max": dist.ReduceOp.MAX,
+            "min": dist.ReduceOp.MIN,
+        }
+        dist.all_reduce(data, op=reduce_ops[op], group=group)
+        if op == "mean":  # ReduceOp.AVG is not supported by the NPU backend
+            data /= dist.get_world_size(group=group)
+
+        if data.numel() == 1:
+            return data.item()
+        else:
+            return data.tolist()
