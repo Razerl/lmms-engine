@@ -111,6 +111,7 @@ class MultiModalDataset(BaseDataset, MultiModalDataLoadingMixin):
             if getattr(self, "data_folder", None) is not None:
                 self.data_folder = [self.data_folder[i] for i in data_index]
 
+        # TODO: 预计算token长度，支持多进程
         if isinstance(self.data_list, HFDataset):
             self.data_lengths = self.data_list.map(
                 lambda x: {"length": self.estimate_data_tokens_per_row(x)},

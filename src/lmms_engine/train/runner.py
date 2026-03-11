@@ -25,6 +25,7 @@ from lmms_engine.parallel.sequence_parallel.ulysses import (
     set_ulysses_sequence_parallel_group,
 )
 from lmms_engine.train.hf import Trainer
+from lmms_engine.utils.compute_tracker import ComputeTracker
 
 from ..utils.train_utils import TrainUtilities
 from .config import TrainerConfig
@@ -163,6 +164,23 @@ class TrainRunner:
         return trainer
 
     def run(self, **kwargs):
+        # Optional EMA (currently implemented in fsdp2_trainer). Keep default behavior unchanged.
+        ema_trainer_type = ["fsdp2_trainer", "bagel_fsdp2_trainer"]
+        if getattr(self.config.trainer_args, "ema_enabled", False):
+            if self.config.trainer_type not in ema_trainer_type:
+                logger.warning(
+                    f"EMA is enabled (ema_enabled=True) but trainer_type={self.config.trainer_type!r} "
+                    "does not implement EMA yet. EMA will be ignored."
+                )
+            else:
+                logger.info(
+                    "EMA enabled: "
+                    f"decay={getattr(self.config.trainer_args, 'ema_decay', None)}, "
+                    f"update_every={getattr(self.config.trainer_args, 'ema_update_every', None)}, "
+                    f"start_step={getattr(self.config.trainer_args, 'ema_start_step', None)}, "
+                    f"resume_from_ema={getattr(self.config.trainer_args, 'ema_resume_from_ema', None)}"
+                )
+
         if self.config.trainer_args.freeze_modules:
             logger.info(f"Freezing modules: {self.config.trainer_args.freeze_modules}")
             for modules in self.config.trainer_args.freeze_modules:
@@ -175,6 +193,17 @@ class TrainRunner:
             self.trainer.train(resume_from_checkpoint=True)
         else:
             self.trainer.train()
+        # Finalize compute tracking for HF-based trainers
+        if hasattr(self.trainer, "compute_tracker"):
+            rank = dist.get_rank() if dist.is_initialized() else 0
+            if rank == 0:
+                summary = self.trainer.compute_tracker.finish()
+                ComputeTracker.save_summary(self.config.trainer_args.output_dir, summary)
+                logger.info(
+                    f"Compute Summary: Total FLOPS={summary.total_flops_formatted}, "
+                    f"Duration={summary.training_duration_formatted}, "
+                    f"Energy={summary.energy_kwh} kWh, CO2={summary.co2_formatted}"
+                )
         # Save the state for hf_trainer
         if hasattr(self.trainer, "save_state"):
             self.trainer.save_state()

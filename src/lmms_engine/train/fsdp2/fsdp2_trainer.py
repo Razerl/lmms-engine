@@ -4,7 +4,7 @@ import random
 import shutil
 import time
 from functools import partial
-from typing import Union
+from typing import Optional, Union
 
 import numpy as np
 import torch
@@ -21,10 +21,12 @@ from transformers.trainer_utils import seed_worker
 
 import lmms_engine.models.utils as model_utils
 import lmms_engine.parallel.process_group_manager as pgm
+from lmms_engine.eval.backends import EvalServerBackend
 from lmms_engine.parallel.parallelize import MODEL_TO_PARALLEL_METHOD, apply_parallelize
 from lmms_engine.train.config import TrainingArguments
 from lmms_engine.train.registry import TRAINER_REGISTER
-from lmms_engine.utils import TrainUtilities
+from lmms_engine.utils import ComputeTracker, TrainUtilities
+from lmms_engine.utils.ema_utils import EMAHelper
 from lmms_engine.utils.fsdp2_utils import (
     apply_fsdp2,
     fsdp2_clip_grad_norm_,
@@ -72,6 +74,19 @@ class FSDP2SFTTrainer:
             rank=dist.get_rank(),
         )
         self.accumulated_grad_steps = 0
+
+        # Optional EMA (fully opt-in)
+        self.ema = EMAHelper(self.args)
+
+        # Optional Eval Server Backend (only on rank 0)
+        self.eval_backend = None
+        if dist.get_rank() == 0 and self.args.eval_config is not None and self.args.eval_strategy != "no":
+            self.eval_backend = EvalServerBackend(
+                url=self.args.eval_config.get("server_url"),
+                poll_interval=self.args.eval_config.get("poll_interval", 20.0),
+                eval_config=self.args.eval_config,
+            )
+            assert self.args.eval_steps == self.args.save_steps, "eval_steps must be equal to save_steps"
 
     def prepare_dataloader(self, dataset: DatasetType, is_training: bool = True):
         data_collator = self.data_collator
@@ -221,6 +236,7 @@ class FSDP2SFTTrainer:
                 self.optimizer.zero_grad()
             else:
                 self.optimizer.step()
+                self.ema.update(step=self.global_step + 1)
 
             self.scheduler.step()
             self.accumulated_grad_steps = 0
@@ -238,15 +254,35 @@ class FSDP2SFTTrainer:
 
         return metrics
 
-    def validation_step(self):
-        pass
+    def validation_step(self, output_dir, step: int):
+        if self.eval_backend is not None:
+            checkpoint_type = "regular" if not self.ema.is_enabled() else "ema"
+            checkpoint_path = os.path.abspath(output_dir)
+            eval_output_dir = os.path.join(checkpoint_path, "eval")
+            self.eval_backend.submit_eval(checkpoint_path, step, eval_output_dir, checkpoint_type=checkpoint_type)
+
+    def _check_eval_results(self, rank: int, wait_until_complete: bool = False):
+        if self.eval_backend is None:
+            return
+        if wait_until_complete:
+            logger.info("Waiting for pending evaluation jobs to complete...")
+            while len(self.eval_backend.pending_evals) > 0:
+                for eval_step, metrics in self.eval_backend.check_and_get_completed():
+                    if rank == 0:
+                        metrics["global_step"] = eval_step
+                        self.tracking.log(metrics)
+                time.sleep(self.eval_backend.poll_interval)
+            logger.info("All evaluation jobs completed")
+        else:
+            for eval_step, metrics in self.eval_backend.check_and_get_completed():
+                if rank == 0:
+                    metrics["global_step"] = eval_step
+                    self.tracking.log(metrics)
 
     def train(self, resume_from_checkpoint: bool = False):
         self.prepare_model()
         train_dataloader = self.prepare_dataloader(self.train_dataset, is_training=True)
         self.train_dataloader = train_dataloader
-        if self.eval_dataset is not None:
-            raise NotImplementedError("Evaluation is not implemented")
         self.prepare_optimizer()
 
         # Validate config for IterableDataset and Dataset
@@ -268,13 +304,22 @@ class FSDP2SFTTrainer:
             )
 
         self.total_tokens = 0
+        self.compute_tracker = ComputeTracker(
+            num_gpus=world_size,
+            carbon_intensity=getattr(self.args, "carbon_intensity", 0.475) or 0.475,
+            gpu_tdp_watts=TrainUtilities.get_device_tdp(),
+            gpu_name=torch.cuda.get_device_name(),
+        )
+        self.compute_tracker.start()
+        loaded_checkpoint_dir: Optional[str] = None
         if resume_from_checkpoint:
             # Search for the latest checkpoint in the output_dir
             checkpoints = [f for f in os.listdir(self.args.output_dir) if f.startswith("checkpoint")]
             checkpoints.sort(key=lambda x: int(x.split("-")[1]))
             latest_checkpoint = checkpoints[-1]
+            loaded_checkpoint_dir = os.path.join(self.args.output_dir, latest_checkpoint)
             self.load_checkpoints(
-                os.path.join(self.args.output_dir, latest_checkpoint),
+                loaded_checkpoint_dir,
                 int(latest_checkpoint.split("-")[1]),
             )
             start_epoch = int(latest_checkpoint.split("-")[1]) / self.steps_per_epoch
@@ -286,6 +331,9 @@ class FSDP2SFTTrainer:
             start_epoch = 0
             self.global_step = 0
             need_update_pbar = False
+
+        # Initialize EMA after model weights are loaded (and optionally restore from checkpoint).
+        self.ema.maybe_init(model=self.fsdp2_model, checkpoint_dir=loaded_checkpoint_dir)
 
         logger.info(f"Training with {self.args.num_train_epochs} epochs with {self.total_steps} steps")
         self.step_profiler.start()
@@ -320,7 +368,10 @@ class FSDP2SFTTrainer:
 
                 # Calculate flops per rank
                 seq_len = batch.get("attention_mask", torch.zeros((1, 1))).sum(dim=1).detach().cpu().tolist()
-                flops, promised_flops = model_utils.flops_counter.estimate_flops(seq_len, delta_time=delta_time)
+                flops, promised_flops, raw_flops = model_utils.flops_counter.estimate_flops(
+                    seq_len, delta_time=delta_time
+                )
+                self.compute_tracker.accumulate_flops(raw_flops)
                 device = self.fsdp2_model.device
                 flops_tensor = torch.tensor(flops, device=device)
                 sp_size = pgm.process_group_manager.cp_world_size
@@ -355,6 +406,7 @@ class FSDP2SFTTrainer:
                             self.global_step,
                             total_limit=self.args.save_total_limit,
                         )
+                        self.validation_step(output_dir, self.global_step)
 
                     if (
                         self.args.torch_empty_cache_steps is not None
@@ -362,15 +414,35 @@ class FSDP2SFTTrainer:
                     ):
                         self.empty_cache()
                     pbar.update(1)
+                self._check_eval_results(rank)
             curr_epoch += 1
-
-            if self.eval_dataset is not None:
-                raise NotImplementedError("Evaluation is not implemented")
 
         pbar.close()
         # Save the final checkpoint
         output_dir = os.path.join(self.args.output_dir, f"checkpoint-{self.global_step}")
         self.save_checkpoints(output_dir, self.global_step, total_limit=self.args.save_total_limit)
+        self.validation_step(output_dir, self.global_step)
+        # Wait for all pending eval jobs to complete
+        if self.eval_backend is not None:
+            self._check_eval_results(rank, wait_until_complete=True)
+
+        # Finalize compute tracking and save summary
+        if rank == 0:
+            summary = self.compute_tracker.finish()
+            self.compute_tracker.save_summary(self.args.output_dir, summary)
+            logger.info(
+                f"Compute Summary: Total FLOPS={summary.total_flops_formatted}, "
+                f"Duration={summary.training_duration_formatted}, "
+                f"Energy={summary.energy_kwh} kWh, CO2={summary.co2_formatted}"
+            )
+            self.tracking.log(
+                {
+                    "compute/total_flops": summary.total_flops,
+                    "compute/duration_seconds": summary.training_duration_seconds,
+                    "compute/energy_kwh": summary.energy_kwh,
+                    "compute/co2_kg": summary.co2_kg,
+                }
+            )
 
     def evaluate(self):
         raise NotImplementedError("Evaluation is not implemented")
@@ -413,6 +485,9 @@ class FSDP2SFTTrainer:
             f"dataloader_state_world_size_{world_size}_rank_{rank}.pt",
         )
         os.makedirs(os.path.join(output_path, "pytorch_model_fsdp_0"), exist_ok=True)
+        ema_enabled = self.ema.is_enabled()
+        if ema_enabled:
+            os.makedirs(os.path.join(output_path, "pytorch_ema_model_fsdp_0"), exist_ok=True)
         os.makedirs(os.path.join(output_path, "optimizer"), exist_ok=True)
         os.makedirs(os.path.join(output_path, "extra_state"), exist_ok=True)
         os.makedirs(os.path.join(output_path, "dataloader_state"), exist_ok=True)
@@ -420,12 +495,20 @@ class FSDP2SFTTrainer:
         dist.barrier()
 
         torch.save(self.fsdp2_model.state_dict(), model_path)
+        if ema_enabled and self.ema.initialized:
+            ema_model_path = os.path.join(
+                output_path,
+                "pytorch_ema_model_fsdp_0",
+                f"model_world_size_{world_size}_rank_{rank}.pt",
+            )
+            torch.save(self.ema.state_dict_for_save(self.fsdp2_model), ema_model_path)
         torch.save(self.optimizer.state_dict(), optim_path)
         extra_state = {
             "lr_scheduler_state": self.scheduler.state_dict(),
             "rng": self.get_rng_state(),
             "total_tokens": self.total_tokens,
             "accumulated_grad_steps": self.accumulated_grad_steps,
+            "compute_tracker": self.compute_tracker.state_dict(),
         }
         torch.save(extra_state, extra_state_path)
         torch.save(self.train_dataloader.state_dict(), dataloader_state_path)
@@ -472,6 +555,8 @@ class FSDP2SFTTrainer:
         extra_state = torch.load(extra_state_path, weights_only=False)
         self.total_tokens = extra_state["total_tokens"]
         self.accumulated_grad_steps = extra_state.get("accumulated_grad_steps", 0)
+        if "compute_tracker" in extra_state and hasattr(self, "compute_tracker"):
+            self.compute_tracker.load_state_dict(extra_state["compute_tracker"])
         self.load_rng_state(extra_state["rng"])
         self.scheduler.load_state_dict(extra_state["lr_scheduler_state"])
         self.train_dataloader.load_state_dict(torch.load(dataloader_state_path, weights_only=False))
