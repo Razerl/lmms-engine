@@ -1,6 +1,7 @@
 import os
-from typing import Dict
 import random
+from typing import Dict
+
 import torch
 from PIL import Image
 
@@ -65,36 +66,21 @@ class VisionSFTIterableDataset(MultiModalIterableDataset):
 
         messages = []
         index_image_message = 0
-        if 'system_prompt' in data and data['system_prompt'] is not None and len(data['system_prompt']) > 0:
-            messages.append(
-                dict(
-                    role = 'system',
-                    content = [dict(type='text', text=data['system_prompt'])]
-                )
-            )
+        if "system_prompt" in data and data["system_prompt"] is not None and len(data["system_prompt"]) > 0:
+            messages.append(dict(role="system", content=[dict(type="text", text=data["system_prompt"])]))
             index_image_message += 1
-        
-        for conv in data['texts']:
-            user_msg = conv['user'].replace('<image>\n', '').replace('<image>', '')
-            assistant_msg = conv['assistant'].replace('<image>\n', '').replace('<image>', '')
 
-            messages.append(
-                dict(
-                    role = 'user',
-                    content = [dict(type='text', text=user_msg)]
-                )
-            )
-            messages.append(
-                dict(
-                    role = 'assistant',
-                    content = [dict(type='text', text=assistant_msg)]
-                )
-            )
-        
-        if 'images' in data and data['images'] is not None and len(data['images']) > 0:
+        for conv in data["texts"]:
+            user_msg = conv["user"].replace("<image>\n", "").replace("<image>", "")
+            assistant_msg = conv["assistant"].replace("<image>\n", "").replace("<image>", "")
+
+            messages.append(dict(role="user", content=[dict(type="text", text=user_msg)]))
+            messages.append(dict(role="assistant", content=[dict(type="text", text=assistant_msg)]))
+
+        if "images" in data and data["images"] is not None and len(data["images"]) > 0:
             images_list = data["images"]
-            image_content = [dict(type='image_url', image=x) for x in images_list]
-            messages[index_image_message]['content'] += image_content
+            image_content = [dict(type="image_url", image=x) for x in images_list]
+            messages[index_image_message]["content"] += image_content
 
         # TODO: try video
         for message in messages:
@@ -122,11 +108,11 @@ class VisionSFTIterableDataset(MultiModalIterableDataset):
             images = None
         if len(videos) == 0:
             videos = None
-        
+
         # TODO: hardcode oms image size strategy
-        if len(images_list) > 0 and 'oms' in images_list[0].lower():
+        if len(images_list) > 0 and "oms" in images_list[0].lower():
             max_random_size = random.choice([2000000, 1000000, 500000, 300000])
-            kwargs.update({'max_pixels': max_random_size, 'min_pixels': 65536})
+            kwargs.update({"max_pixels": max_random_size, "min_pixels": 65536})
         inputs = self.processor.process(images=images, hf_messages=hf_messages, videos=videos, **kwargs)
         return inputs
 

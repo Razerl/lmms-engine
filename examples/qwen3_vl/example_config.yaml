@@ -55,11 +55,7 @@ trainer_args:
   log_level: passive
   log_level_replica: warning
   log_on_each_node: true
-<<<<<<< HEAD
-  logging_dir: /data/rzli/work_dirs/lmms/Qwen3VL-OMS-SFT-1119/logs/0
-=======
   logging_dir: ./output/qwen3_vl_training/runs
->>>>>>> upstream/main
   logging_strategy: steps
   logging_first_step: false
   logging_steps: 1

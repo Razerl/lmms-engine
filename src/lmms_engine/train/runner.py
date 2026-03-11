@@ -188,7 +188,9 @@ class TrainRunner:
                 if cls is not None:
                     for param in cls.parameters():
                         param.requires_grad = False
-        logger.info(f"Trainable model size: {sum(p.numel() for p in self.model.parameters() if p.requires_grad) / 1e9} B")
+        logger.info(
+            f"Trainable model size: {sum(p.numel() for p in self.model.parameters() if p.requires_grad) / 1e9} B"
+        )
         if list(pathlib.Path(self.config.trainer_args.output_dir).glob("checkpoint-*")):
             self.trainer.train(resume_from_checkpoint=True)
         else:
