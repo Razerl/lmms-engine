@@ -105,4 +105,4 @@ Repository = "https://github.com/EvolvingLMMs-Lab/lmms_engine"
 known_third_party = ["wandb"]
 
 [tool.uv.sources]
-flash-attn = { path = "../../downloads/flash_attn-2.8.3+cu12torch2.8cxx11abiFALSE-cp312-cp312-linux_x86_64.whl" }
+flash-attn = { path = "downloads/flash_attn-2.8.3+cu12torch2.8cxx11abiFALSE-cp312-cp312-linux_x86_64.whl" }

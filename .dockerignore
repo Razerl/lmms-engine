@@ -1,0 +1,8 @@
+.venv
+.git
+__pycache__
+wandb
+outputs
+CLAUDE.md
+*.tar
+*.pt

@@ -1,8 +1,8 @@
 #!/bin/bash
 # hf download luodian/rae_siglip2 --local-dir data/rae_siglip2 # to make sure you have the pre-trained model and processor for RAE
 DATASET_PATH="data/oms_sft_v2.yaml"
-PROCESSOR_NAME="/data/rzli/data/data_ssd_smb/models/QwenVL/Qwen3-VL-4B-Instruct"
-MODEL_PATH="/data/rzli/data/data_ssd_smb/models/QwenVL/Qwen3-VL-4B-Instruct"
+PROCESSOR_NAME="/home/rzli/data/data_ssd_smb/models/QwenVL/Qwen3-VL-4B-Instruct"
+MODEL_PATH="/home/rzli/data/data_ssd_smb/models/QwenVL/Qwen3-VL-4B-Instruct"
 ATTN_IMPLEMENTATION="flash_attention_2"
 PER_DEVICE_TRAIN_BATCH_SIZE=1
 LEARNING_RATE=1.0e-05
@@ -10,20 +10,21 @@ WEIGHT_DECAY=0.0
 GRADIENT_ACCUMULATION_STEPS=1
 GRADIENT_CHECKPOINTING=true
 NUM_TRAIN_EPOCHS=1
-RUN_NAME="Qwen3VL-ALL-SFT-1224"
-OUTPUT_DIR="/data/rzli/work_dirs/lmms/${RUN_NAME}"
+RUN_NAME="Qwen3VL-ALL-SFT-test-0317"
+OUTPUT_DIR="/home/rzli/work_dirs/lmms/${RUN_NAME}"
 WARMUP_RATIO=0.1
 MAX_STEPS=20000
 
+export CUDA_VISIBLE_DEVICES="2,3,4,5"
 export TOKENIZERS_PARALLELISM=false
 export WANDB_PROJECT="Qwen3VL"
 export WANDB_ENTITY="lrzlrz1995-personal"
 
-torchrun --nproc_per_node="8" \
+torchrun --nproc_per_node="4" \
     --nnodes="1" \
     --node_rank="0" \
     --master_addr="127.0.0.1" \
-    --master_port="8000" \
+    --master_port="8005" \
     -m lmms_engine.launch.cli \
     trainer_type=fsdp2_trainer \
     dataset_config.dataset_path=${DATASET_PATH} \
@@ -36,7 +37,7 @@ torchrun --nproc_per_node="8" \
     +dataset_config.processor_config.extra_kwargs.image_min_pixels=65536 \
     dataset_config.packing=true \
     dataset_config.packing_strategy=first_fit \
-    dataset_config.packing_length=48000 \
+    dataset_config.packing_length=40000 \
     dataset_config.filter_overlong=true \
     dataset_config.video_backend=qwen_vl_utils \
     dataset_config.video_sampling_strategy=fps \
