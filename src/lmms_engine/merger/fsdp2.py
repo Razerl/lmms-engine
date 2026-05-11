@@ -1,6 +1,7 @@
 """FSDP2 checkpoint merger implementation."""
 
 import os
+import shutil
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Literal
@@ -85,26 +86,71 @@ class FSDP2Merger(CheckpointMerger):
     def consolidate(self, shard_state_dicts: list[dict]) -> dict:
         """Consolidate sharded FSDP2 state dicts into a single full state dict.
 
+        Uses each tensor's ``DTensor.placements`` to decide whether shards are
+        sharded (concatenate along the sharding dim) or replicated (take one
+        copy). Falls back to value equality for plain tensors that don't carry
+        placement metadata.
+
         Args:
             shard_state_dicts: List of state dicts from each shard
 
         Returns:
             Full consolidated state dict
         """
-        state_dict = {}
+        state_dict: dict = {}
 
-        # Gather all tensor shards by key
+        # Gather all tensor shards by key, remembering placements / global shape
+        # for proper consolidation. We can't use byte-level equality because a
+        # parameter that happens to be uniform after init (e.g. RMSNorm.weight
+        # initialized to 1.0) is genuinely sharded but every shard has the
+        # same values, so equality would silently drop 7/8 of its dim.
+        placements_per_key: dict = {}
+        global_shape_per_key: dict = {}
         for key in set(shard_state_dicts[0].keys()):
-            state_dict[key] = []
+            shards: list[torch.Tensor] = []
+            placements = None
+            global_shape = None
             for model_state_shard in shard_state_dicts:
                 tensor = model_state_shard.pop(key)
-                state_dict[key].append(tensor._local_tensor.bfloat16())
+                if hasattr(tensor, "_local_tensor"):
+                    if placements is None:
+                        placements = tensor.placements
+                        global_shape = tuple(tensor.shape)
+                    shards.append(tensor._local_tensor.bfloat16())
+                else:
+                    # Plain tensor (e.g. inv_freq buffer): replicated implicitly.
+                    shards.append(tensor.bfloat16())
+            state_dict[key] = shards
+            placements_per_key[key] = placements
+            global_shape_per_key[key] = global_shape
 
-        # Merge tensors along dim=0 (data parallel dimension)
+        # Merge tensors using placements when available, otherwise fall back to
+        # value equality for plain tensors.
         for key in sorted(state_dict):
-            if not isinstance(state_dict[key], list):
+            shards = state_dict[key]
+            placements = placements_per_key[key]
+            if placements is None:
+                # Plain tensor (no DTensor metadata): replicated across ranks,
+                # all shards should be equal — take one.
+                state_dict[key] = shards[0]
                 continue
-            state_dict[key] = torch.cat(state_dict[key], dim=0)
+
+            # Single placement (FSDP1D): handle Shard / Replicate / Partial.
+            if len(placements) == 1:
+                p = placements[0]
+                if p.is_replicate():
+                    state_dict[key] = shards[0]
+                elif p.is_shard():
+                    state_dict[key] = torch.cat(shards, dim=p.dim)
+                else:
+                    raise NotImplementedError(
+                        f"Unsupported placement {p} for key '{key}' (only Shard / Replicate are handled)."
+                    )
+            else:
+                # Multi-axis (e.g. HSDP / 2D mesh): not currently produced by
+                # the trainer's FSDP2 setup. Fail loudly rather than silently
+                # mis-consolidating.
+                raise NotImplementedError(f"Multi-placement DTensor not supported: key='{key}' placements={placements}")
 
         return state_dict
 
@@ -137,6 +183,34 @@ class FSDP2Merger(CheckpointMerger):
         checkpoint_folders.sort(key=lambda x: int(x.name.split("-")[-1]))
         latest_checkpoint = checkpoint_folders[-1]
         return latest_checkpoint
+
+    def maybe_tie_weights(self, model: torch.nn.Module, config: object, state_dict: dict) -> None:
+        """Re-tie weights if the model declares weight tying.
+
+        FSDP saves tied parameters (e.g. ``lm_head`` <-> ``embed_tokens``) as
+        independent shards, so after ``load_state_dict(..., assign=True)`` they
+        become separate tensors and ``save_pretrained`` would write both.
+
+        Only re-ties when the model declares tying AND the saved tensors
+        actually agree, to avoid silently dropping divergent weights.
+        """
+        tied_keys_map = getattr(model, "_tied_weights_keys", None)
+        tie_word_embeddings = getattr(config, "tie_word_embeddings", False) or getattr(
+            getattr(config, "text_config", None), "tie_word_embeddings", False
+        )
+        if not (tied_keys_map and tie_word_embeddings):
+            return
+
+        if isinstance(tied_keys_map, dict):
+            for tied_key, source_key in tied_keys_map.items():
+                t1 = state_dict.get(tied_key)
+                t2 = state_dict.get(source_key)
+                if t1 is not None and t2 is not None and not torch.equal(t1, t2):
+                    logger.warning(f"Tied weights mismatch: '{tied_key}' != '{source_key}'. Skipping tie_weights().")
+                    return
+
+        logger.info("Re-tying weights (tie_word_embeddings=True).")
+        model.tie_weights()
 
     def merge(
         self,
@@ -186,10 +260,18 @@ class FSDP2Merger(CheckpointMerger):
         with init_empty_weights():
             model = model_cls.from_config(config)
         model.load_state_dict(full_state_dict, assign=True)
+        self.maybe_tie_weights(model, config, full_state_dict)
         processor = AutoProcessor.from_pretrained(checkpoint_path)
         processor.save_pretrained(output_path)
         config.save_pretrained(output_path)
         # Save merged checkpoint
         model.save_pretrained(output_path)
+
+        # Copy over any extra config files that AutoProcessor may not handle
+        # (e.g. processor_config.json for custom processors)
+        for extra_file in ["processor_config.json"]:
+            src = checkpoint_path / extra_file
+            if src.exists():
+                shutil.copy2(src, output_path / extra_file)
 
         return output_path

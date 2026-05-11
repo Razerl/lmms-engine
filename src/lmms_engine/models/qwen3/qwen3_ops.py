@@ -42,13 +42,15 @@ logger = logging.get_logger(__name__)
 
 
 if is_flash_attn_2_available():
-    from flash_attn import flash_attn_func, flash_attn_varlen_func
+    from flash_attn import flash_attn_func
     from flash_attn.bert_padding import (
         index_first_axis,
         pad_input,
         rearrange,
         unpad_input,
     )
+
+from lmms_engine.kernels.attention import varlen_attn
 
 try:
     from flash_attn.layers.rotary import apply_rotary_emb_func
@@ -146,10 +148,15 @@ def model_forward(
     # create position embeddings to be shared across the decoder layers
     position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
-    for decoder_layer in self.layers[: self.config.num_hidden_layers]:
+    for i, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
+        # New transformers uses config.layer_types; fall back to decoder_layer.attention_type for older versions
+        if hasattr(self.config, "layer_types"):
+            attention_type = self.config.layer_types[i]
+        else:
+            attention_type = decoder_layer.attention_type
         hidden_states = decoder_layer(
             hidden_states,
-            attention_mask=causal_mask_mapping[decoder_layer.attention_type],
+            attention_mask=causal_mask_mapping[attention_type],
             position_ids=position_ids,
             past_key_values=past_key_values,
             use_cache=use_cache,
@@ -273,7 +280,8 @@ def attn_forward(
 
     max_seqlen = torch.diff(cu_seq_lens).max().item() if cu_seq_lens is not None else None
     window_size = (-1, -1)
-    attn_output = flash_attn_varlen_func(
+
+    attn_output = varlen_attn(
         q=query_states,
         k=key_states,
         v=value_states,
@@ -285,6 +293,7 @@ def attn_forward(
         window_size=window_size,
         softmax_scale=self.head_dim**-0.5,
         dropout_p=0.0,
+        backend=self.config._attn_implementation,
     )
 
     ########## AlltoAll for Ulysses ##########

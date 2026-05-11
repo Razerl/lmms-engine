@@ -53,10 +53,6 @@ def lce_forward(
         output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
     )
     return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-    tokens_count = attention_mask.sum().item()
-    n_image_tokens = (input_ids == self.config.image_token_id).sum().item()
-    n_video_tokens = (input_ids == self.config.video_token_id).sum().item()
-    visual_tokens = n_image_tokens + n_video_tokens
 
     outputs = self.model(
         input_ids=input_ids,
@@ -91,6 +87,8 @@ def lce_forward(
         labels_unpad = slice_input_tensor(labels_unpad, dim=0, padding=True)
     labels = labels_unpad
 
+    config = getattr(self.config, "text_config", self.config)
+
     # if in training mode, don't materialize logits
     if labels is not None:
         if use_rmpad:
@@ -114,7 +112,7 @@ def lce_forward(
             shift_labels = labels[..., 1:].contiguous()
 
         # flatten tokens
-        shift_hidden_states = shift_hidden_states.view(-1, self.config.hidden_size)
+        shift_hidden_states = shift_hidden_states.view(-1, config.hidden_size)
         shift_labels = shift_labels.view(-1)
 
         reduction = "sum" if "num_items_in_batch" in kwargs else "mean"

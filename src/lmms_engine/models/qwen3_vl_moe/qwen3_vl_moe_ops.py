@@ -35,11 +35,12 @@ from lmms_engine.parallel.sequence_parallel.ulysses import (
     ulysses_pad,
 )
 
+from ..common_ops.rope import qwen3_vl_get_rope_index
 from ..sequence_packing_utils import BaseModelOutputWithPastAndRmpad, _unpad_input
 
 if is_flash_attn_2_available():
     try:
-        from flash_attn import flash_attn_func, flash_attn_varlen_func
+        from flash_attn import flash_attn_func
         from flash_attn.bert_padding import (
             index_first_axis,
             pad_input,
@@ -50,6 +51,12 @@ if is_flash_attn_2_available():
         _flash_supports_window_size = "window_size" in list(inspect.signature(flash_attn_func).parameters)
     except:
         raise ModuleNotFoundError("flash_attn is not available. Please install it via `pip install flash_attn`.")
+
+from lmms_engine.kernels.attention import varlen_attn
+
+from ..common_ops.visual import (
+    parse_visual_output_with_deepstack as parse_visual_output,
+)
 
 
 def _distribute_deepstack_embeds_for_rank(deepstack_embeds, original_mask, sp_size):
@@ -203,7 +210,8 @@ def model_forward(
             or (past_key_values is None or past_key_values.get_seq_length() == 0)
         )
         if (prefill_compiled_stage or prefill_noncompiled_stage) or self.rope_deltas is None:
-            position_ids, rope_deltas = self.get_rope_index(
+            position_ids, rope_deltas = qwen3_vl_get_rope_index(
+                self,
                 original_input_ids,
                 image_grid_thw,
                 video_grid_thw,
@@ -236,13 +244,15 @@ def model_forward(
     video_mask = None
 
     if pixel_values is not None:
-        image_embeds, deepstack_image_embeds = self.get_image_features(pixel_values, image_grid_thw)
+        image_output = self.get_image_features(pixel_values, image_grid_thw)
+        image_embeds, deepstack_image_embeds = parse_visual_output(image_output)
         image_embeds = torch.cat(image_embeds, dim=0).to(inputs_embeds.device, inputs_embeds.dtype)
         image_mask, _ = self.get_placeholder_mask(input_ids, inputs_embeds=inputs_embeds, image_features=image_embeds)
         inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
 
     if pixel_values_videos is not None:
-        video_embeds, deepstack_video_embeds = self.get_video_features(pixel_values_videos, video_grid_thw)
+        video_output = self.get_video_features(pixel_values_videos, video_grid_thw)
+        video_embeds, deepstack_video_embeds = parse_visual_output(video_output)
         video_embeds = torch.cat(video_embeds, dim=0).to(inputs_embeds.device, inputs_embeds.dtype)
         _, video_mask = self.get_placeholder_mask(input_ids, inputs_embeds=inputs_embeds, video_features=video_embeds)
         inputs_embeds = inputs_embeds.masked_scatter(video_mask, video_embeds)
@@ -536,7 +546,7 @@ def attn_forward(
 
     window_size = (-1, -1)
 
-    attn_output = flash_attn_varlen_func(
+    attn_output = varlen_attn(
         q=query_states,
         k=key_states,
         v=value_states,
@@ -548,6 +558,7 @@ def attn_forward(
         window_size=window_size,
         softmax_scale=head_dim**-0.5,
         dropout_p=0.0,
+        backend=self.config._attn_implementation,
     )
 
     if ulysses_sp_size > 1:
@@ -565,44 +576,38 @@ def attn_forward(
 def moe_sparse_layer_forward(
     self: Qwen3VLMoeTextSparseMoeBlock, hidden_states: torch.Tensor, **kwargs
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Modified from the original code to support parallelization, similar to the MoE in torchtitan
-    """
     batch_size, sequence_length, hidden_dim = hidden_states.shape
     hidden_states = hidden_states.view(-1, hidden_dim)
-    # router_logits: (batch * sequence_length, n_experts)
-    router_logits = self.gate(hidden_states)
 
-    routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)
-    routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
+    if hasattr(self.gate, "num_experts"):
+        # transformers >= 5.0: TopKRouter
+        num_experts = self.gate.num_experts
+        top_k = self.gate.top_k
+        router_logits, routing_weights, selected_experts = self.gate(hidden_states)
+    else:
+        # transformers < 5.0: nn.Linear gate
+        router_logits = self.gate(hidden_states)
+        routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)
+        routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
+        routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
+        routing_weights = routing_weights.to(hidden_states.dtype)
+        num_experts = self.num_experts
+        top_k = self.top_k
+
     selected_experts = selected_experts.to(torch.float32)
-
-    # Always normalize the routing weights
-    routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
-    # we cast back to the input dtype
-    routing_weights = routing_weights.to(hidden_states.dtype)
-
-    # Calculate the number of tokens per expert
-    # [num_tokens on expert_0, num_tokens on expert_1, ...]
-    num_tokens_per_expert = torch.histc(selected_experts, bins=self.num_experts, min=0, max=self.num_experts)
-    # Histc does not support half tensor or int64, so we cast to float32 and cast back to int64
+    num_tokens_per_expert = torch.histc(selected_experts, bins=num_experts, min=0, max=num_experts)
     selected_experts = selected_experts.to(torch.int64)
     num_tokens_per_expert = num_tokens_per_expert.to(torch.int64)
 
-    # Will need to compute num_tokens * top_k num tokens, sorted by the token index and match the expert order
     token_indices_experts_sorted = torch.argsort(selected_experts.view(-1), stable=True)
-    # Get scores for each token
     top_scores_experts_sorted = routing_weights.view(-1)[token_indices_experts_sorted]
-    # Divide by top_k to get the token index that matches the expert order
-    # [token_index_on_expert_0, token_index_on_expert_1, ...]
-    token_indices_experts_sorted = token_indices_experts_sorted // self.top_k
+    token_indices_experts_sorted = token_indices_experts_sorted // top_k
 
     token_indices_experts_sorted = token_indices_experts_sorted.reshape(-1, 1).expand(-1, hidden_dim)
     routed_input = torch.gather(hidden_states, dim=0, index=token_indices_experts_sorted)
 
     out_experts_split = self.experts(routed_input, num_tokens_per_expert)
 
-    # Gather the output from the experts
     routed_output = out_experts_split * top_scores_experts_sorted.reshape(-1, 1)
     final_hidden_states = torch.zeros_like(hidden_states)
     final_hidden_states = final_hidden_states.scatter_add(dim=0, index=token_indices_experts_sorted, src=routed_output)
@@ -612,6 +617,13 @@ def moe_sparse_layer_forward(
 
 
 def experts_forward(self: Qwen3VLMoeTextExperts, *routed_input):
+    if len(routed_input) == 2 and routed_input[1].ndim == 1:
+        routed_input = torch.split(
+            routed_input[0],
+            split_size_or_sections=routed_input[1].tolist(),
+            dim=0,
+        )
+
     out_experts_split = []
     if isinstance(self.down_proj, DTensor):
         down_proj = self.down_proj.to_local()
@@ -623,7 +635,7 @@ def experts_forward(self: Qwen3VLMoeTextExperts, *routed_input):
     for idx, x in enumerate(routed_input):
         gate_up = torch.matmul(x, gate_up_proj[idx])
         gate, up = gate_up.chunk(2, dim=-1)
-        hidden = up * self.act_fn(gate)
+        hidden = self.act_fn(gate) * up
         hidden = torch.matmul(hidden, down_proj[idx])
         out_experts_split.append(hidden)
 
