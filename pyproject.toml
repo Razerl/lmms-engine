@@ -11,15 +11,15 @@ version = "0.1.3.dev"
 authors = [{name = "LMMs-Lab"}]
 description = "A simple, unified multimodal models training engine. Lean, flexible, and built for hacking, and hacking at scale."
 readme = "README.md"
-requires-python = "==3.12"
+requires-python = "==3.12.0"
 license = { text = "Apache-2.0" }
 dependencies = [
     "datasets",
     "hf_transfer",
-    "transformers",
+    "transformers>=5.3.0",
     "accelerate",
     "pillow",
-    "peft",
+    "peft>=0.18.0",
     "deepspeed",
     "bitsandbytes",
     "triton",
@@ -34,7 +34,7 @@ dependencies = [
     "pyyaml",
     "wandb",
     "torchdata",
-    "liger-kernel",
+    "liger-kernel>=0.6.5",
     "qwen-vl-utils",
     "qwen-omni-utils",
     "einops",
@@ -46,6 +46,7 @@ dependencies = [
     "tqdm",
     "opencv-python",
     "flash-attn",
+    "flash-linear-attention>=0.5.0",
 ]
 
 [project.optional-dependencies]
@@ -106,3 +107,6 @@ known_third_party = ["wandb"]
 
 [tool.uv.sources]
 flash-attn = { path = "downloads/flash_attn-2.8.3+cu12torch2.8cxx11abiFALSE-cp312-cp312-linux_x86_64.whl" }
+
+[tool.uv]
+no-build-isolation-package = ["causal-conv1d"]
