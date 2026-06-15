@@ -3,7 +3,6 @@
 .gitignore
 
 # Local directories (from .gitignore)
-data/
 scripts/
 wandb/
 playground/
@@ -77,7 +76,3 @@ Dockerfile
 # AI-Coding
 CLAUDE.md
 .codex
-
-# Checkpoints or Zipfile
-*.tar
-*.pt

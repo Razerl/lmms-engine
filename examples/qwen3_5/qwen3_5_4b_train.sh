@@ -1,6 +1,22 @@
 #!/bin/bash
 # hf download luodian/rae_siglip2 --local-dir data/rae_siglip2 # to make sure you have the pre-trained model and processor for RAE
-DATASET_PATH="data/oms_sft_v2.yaml"
+set -e
+
+usage() {
+    cat <<'EOF'
+Usage: sh examples/qwen3_5/qwen3_5_4b_train.sh [RUN_NAME] [WANDB_API_KEY] [NPROC_PER_NODE] [WARMUP_STEPS] [MAX_STEPS] [PACKING_LENGTH]
+
+You can also pass values through environment variables:
+  RUN_NAME=exp-name WANDB_API_KEY=... NPROC_PER_NODE=8 WARMUP_STEPS=500 MAX_STEPS=5000 PACKING_LENGTH=40000 sh examples/qwen3_5/qwen3_5_4b_train.sh
+EOF
+}
+
+if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+    usage
+    exit 0
+fi
+
+DATASET_PATH="data/oms_sft_v1_3.yaml"
 PROCESSOR_NAME="/home/rzli/data/data_ssd_smb/models/QwenVL/Qwen3.5-4B"
 MODEL_PATH="/home/rzli/data/data_ssd_smb/models/QwenVL/Qwen3.5-4B"
 ATTN_IMPLEMENTATION="flash_attention_2"
@@ -10,17 +26,40 @@ WEIGHT_DECAY=0.0
 GRADIENT_ACCUMULATION_STEPS=1
 GRADIENT_CHECKPOINTING=true
 NUM_TRAIN_EPOCHS=1
-RUN_NAME="Qwen3_5-SFT-test"
-OUTPUT_DIR="/home/rzli/work_dirs/lmms/${RUN_NAME}"
-WARMUP_STEPS=2000
-MAX_STEPS=20000
+RUN_NAME="${1:-${RUN_NAME:-Qwen3_5-4B-ALL-SFT-test}}"
+WANDB_API_KEY="${2:-${WANDB_API_KEY:-}}"
+NPROC_PER_NODE="${3:-${NPROC_PER_NODE:-8}}"
+WARMUP_STEPS="${4:-${WARMUP_STEPS:-500}}"
+MAX_STEPS="${5:-${MAX_STEPS:-5000}}"
+PACKING_LENGTH="${6:-${PACKING_LENGTH:-40000}}"
+OUTPUT_DIR="/home/rzli/data/data_ssd_smb/work_dirs/lmms/${RUN_NAME}"
 
-export CUDA_VISIBLE_DEVICES="0,1,2,3"
+if [ -z "${WANDB_API_KEY}" ]; then
+    echo "Error: WANDB_API_KEY is required for non-interactive wandb logging." >&2
+    echo "Usage: sh examples/qwen3_5/qwen3_5_4b_train.sh ${RUN_NAME} <WANDB_API_KEY> [NPROC_PER_NODE] [WARMUP_STEPS] [MAX_STEPS] [PACKING_LENGTH]" >&2
+    echo "Or: RUN_NAME=${RUN_NAME} WANDB_API_KEY=<key> sh examples/qwen3_5/qwen3_5_4b_train.sh" >&2
+    exit 1
+fi
+
+for var_name in NPROC_PER_NODE WARMUP_STEPS MAX_STEPS PACKING_LENGTH; do
+    eval "var_value=\${${var_name}}"
+    case "${var_value}" in
+        ''|*[!0-9]*|0)
+            echo "Error: ${var_name} must be a positive integer, got '${var_value}'." >&2
+            exit 1
+            ;;
+    esac
+done
+
+# export CUDA_VISIBLE_DEVICES="1,2"
 export TOKENIZERS_PARALLELISM=false
+export WANDB_API_KEY
+export WANDB_MODE=online
 export WANDB_PROJECT="Qwen3_5"
 export WANDB_ENTITY="lrzlrz1995-personal"
+export WANDB_SILENT=true
 
-torchrun --nproc_per_node="4" \
+torchrun --nproc_per_node="${NPROC_PER_NODE}" \
     --nnodes="1" \
     --node_rank="0" \
     --master_addr="127.0.0.1" \
@@ -36,7 +75,7 @@ torchrun --nproc_per_node="4" \
     +dataset_config.processor_config.extra_kwargs.image_min_pixels=65536 \
     dataset_config.packing=true \
     dataset_config.packing_strategy=balanced \
-    dataset_config.packing_length=32768 \
+    dataset_config.packing_length=${PACKING_LENGTH} \
     +dataset_config.extra_kwargs.packing_kwargs.num_buckets=2 \
     dataset_config.filter_overlong=true \
     dataset_config.video_backend=qwen_vl_utils \

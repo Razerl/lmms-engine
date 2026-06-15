@@ -221,6 +221,26 @@ wheels = [
 ]
 
 [[package]]
+name = "causal-conv1d"
+version = "1.6.2.post1"
+source = { path = "downloads/causal_conv1d-1.6.2.post1-cp312-cp312-linux_x86_64.whl" }
+dependencies = [
+    { name = "ninja" },
+    { name = "packaging" },
+    { name = "torch" },
+]
+wheels = [
+    { filename = "causal_conv1d-1.6.2.post1-cp312-cp312-linux_x86_64.whl", hash = "sha256:ee5a87ebc4a8bb04408e20cc95cdb85e90742b90c0bcdfb1384a88758f2ee246" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "ninja" },
+    { name = "packaging" },
+    { name = "torch" },
+]
+
+[[package]]
 name = "certifi"
 version = "2025.8.3"
 source = { registry = "https://pypi.mirrors.ustc.edu.cn/simple/" }
@@ -904,6 +924,7 @@ source = { editable = "." }
 dependencies = [
     { name = "accelerate" },
     { name = "bitsandbytes" },
+    { name = "causal-conv1d" },
     { name = "datasets" },
     { name = "decord" },
     { name = "deepspeed" },
@@ -973,6 +994,7 @@ requires-dist = [
     { name = "azure-identity", marker = "extra == 'storage'" },
     { name = "azure-storage-blob", marker = "extra == 'storage'" },
     { name = "bitsandbytes" },
+    { name = "causal-conv1d", path = "downloads/causal_conv1d-1.6.2.post1-cp312-cp312-linux_x86_64.whl" },
     { name = "datasets" },
     { name = "decord" },
     { name = "deepspeed" },

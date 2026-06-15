@@ -13,8 +13,8 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "../../src"))
 
 from lmms_engine.utils.data_utils import DataUtilities
 
-dataset_path = "data/oms_sft_v2.yaml"
-processor_name = "/data/rzli/data/data_ssd_smb/models/QwenVL/Qwen3-VL-4B-Instruct"
+dataset_path = "data/oms_sft_v1_3.yaml"
+processor_name = "/home/rzli/data/data_ssd_smb/models/QwenVL/Qwen3-VL-4B-Instruct"
 
 # Global processor for workers
 processor = None
